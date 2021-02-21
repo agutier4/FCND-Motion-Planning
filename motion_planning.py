@@ -141,10 +141,8 @@ class MotionPlanning(Drone):
         # convert start position to current position rather than map center
         grid_start = ( int(local_pose[0]) - north_offset, int(local_pose[1]) - east_offset)
  
-        # Set goal as some arbitrary position on the grid
-        goal_lat_lon = ( -122.397120, 37.793834, 0 ) #demo
-        goal_lat_lon = ( -122.398244, 37.796092, 0 )
-
+        # Set goal using provided global position
+        goal_lat_lon = ( args.goal_lon, args.goal_lat, args.goal_alt )
         local_goal = global_to_local( goal_lat_lon, self.global_home )
         grid_goal = ( int(local_goal[0]) - north_offset, int(local_goal[1]) - east_offset )
 
@@ -159,8 +157,8 @@ class MotionPlanning(Drone):
         path, _ = a_star(grid, heuristic, grid_start, grid_goal)
 
         # Prune path to minimize number of waypoints
-        if (args.prune == 'colliniarity'):
-            print('Pruning path with colliniarity check')
+        if (args.prune == 'collinearity'):
+            print('Pruning path with collinearity check')
             path = collinearity_prune(path)
         elif (args.prune == 'bresenham'):
             print('Pruning path with bresenham')
@@ -201,7 +199,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--port', type=int, default=5760, help='Port number')
     parser.add_argument('--host', type=str, default='127.0.0.1', help="host address, i.e. '127.0.0.1'")
-    parser.add_argument('--prune', type=str, default='bresenham', help="Path pruning Algorithm ('colliniarity' or 'bresenham'")
+    parser.add_argument('--prune', type=str, default='bresenham', help="Path pruning Algorithm ('collinearity' or 'bresenham'")
+    parser.add_argument('--goal_lon', type=float, default=-122.397120, help='Goal latitude')
+    parser.add_argument('--goal_lat', type=float, default=37.793834, help='Goal longitude')
+    parser.add_argument('--goal_alt', type=float, default=0, help='Goal altitude')
     args = parser.parse_args()
 
     conn = MavlinkConnection('tcp:{0}:{1}'.format(args.host, args.port), timeout=60)
