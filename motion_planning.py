@@ -2,15 +2,13 @@ import argparse
 import time
 import msgpack
 from enum import Enum, auto
-
 import numpy as np
 
-from planning_utils import a_star, heuristic, create_grid
+from planning_utils import a_star, heuristic, create_grid, collinearity_prune, bresenham_prune, a_star_graph
 from udacidrone import Drone
 from udacidrone.connection import MavlinkConnection
 from udacidrone.messaging import MsgID
 from udacidrone.frame_utils import global_to_local
-
 
 class States(Enum):
     MANUAL = auto()
@@ -27,7 +25,7 @@ class MotionPlanning(Drone):
     def __init__(self, connection):
         super().__init__(connection)
 
-        self.target_position = np.array([0.0, 0.0, 0.0])
+        self.target_position = np.array([0.0, 0.0, 0.0, 0.0])
         self.waypoints = []
         self.in_mission = True
         self.check_state = {}
@@ -119,13 +117,17 @@ class MotionPlanning(Drone):
 
         self.target_position[2] = TARGET_ALTITUDE
 
-        # TODO: read lat0, lon0 from colliders into floating point values
-        
-        # TODO: set home position to (lon0, lat0, 0)
+        # read lat0, lon0 from colliders into floating point values
+        filename = 'colliders.csv'
+        home = np.genfromtxt(filename, dtype=str, max_rows=1, delimiter=',')
+        lat0 = float(str.split(home[0])[1])
+        lon0 = float(str.split(home[1])[1])
 
-        # TODO: retrieve current global position
- 
-        # TODO: convert to current local position using global_to_local()
+        # set home position to (lon0, lat0, 0)
+        self.set_home_position( float(lon0), float(lat0), 0)
+        
+        # convert to current global position to local position using global_to_local()
+        local_pose = global_to_local(self.global_position, self.global_home) 
         
         print('global home {0}, position {1}, local position {2}'.format(self.global_home, self.global_position,
                                                                          self.local_position))
@@ -135,27 +137,51 @@ class MotionPlanning(Drone):
         # Define a grid for a particular altitude and safety margin around obstacles
         grid, north_offset, east_offset = create_grid(data, TARGET_ALTITUDE, SAFETY_DISTANCE)
         print("North offset = {0}, east offset = {1}".format(north_offset, east_offset))
-        # Define starting point on the grid (this is just grid center)
-        grid_start = (-north_offset, -east_offset)
-        # TODO: convert start position to current position rather than map center
-        
-        # Set goal as some arbitrary position on the grid
-        grid_goal = (-north_offset + 10, -east_offset + 10)
-        # TODO: adapt to set goal as latitude / longitude position and convert
 
+        # convert start position to current position rather than map center
+        grid_start = ( int(local_pose[0]) - north_offset, int(local_pose[1]) - east_offset)
+ 
+        # Set goal as some arbitrary position on the grid
+        goal_lat_lon = ( -122.397120, 37.793834, 0 ) #demo
+        goal_lat_lon = ( -122.398244, 37.796092, 0 )
+
+        local_goal = global_to_local( goal_lat_lon, self.global_home )
+        grid_goal = ( int(local_goal[0]) - north_offset, int(local_goal[1]) - east_offset )
+
+        # make sure goal point is not inside an obstacle or safety margin
+        if (grid[grid_goal[0]][grid_goal[1]] == 1):
+            print("Invalid goal point: Aborting")
+            self.landing_transition()
+            return
+     
         # Run A* to find a path from start to goal
-        # TODO: add diagonal motions with a cost of sqrt(2) to your A* implementation
-        # or move to a different search space such as a graph (not done here)
         print('Local Start and Goal: ', grid_start, grid_goal)
         path, _ = a_star(grid, heuristic, grid_start, grid_goal)
-        # TODO: prune path to minimize number of waypoints
-        # TODO (if you're feeling ambitious): Try a different approach altogether!
+
+        # Prune path to minimize number of waypoints
+        if (args.prune == 'colliniarity'):
+            print('Pruning path with colliniarity check')
+            path = collinearity_prune(path)
+        elif (args.prune == 'bresenham'):
+            print('Pruning path with bresenham')
+            path = bresenham_prune(path,grid)
+        else:
+            print('Unrecognized prune option returning full path')
 
         # Convert path to waypoints
         waypoints = [[p[0] + north_offset, p[1] + east_offset, TARGET_ALTITUDE, 0] for p in path]
+
+        # Assign heading to the waypoints so the craft flies pointed towards the waypoint 
+        for i in range(1, len(waypoints)):
+            p1 = waypoints[i-1]
+            p2 = waypoints[i]
+            waypoints[i][3] = np.arctan2((p2[1]-p1[1]), (p2[0]-p1[0]))
+
         # Set self.waypoints
         self.waypoints = waypoints
-        # TODO: send waypoints to sim (this is just for visualization of waypoints)
+
+        # send waypoints to sim (this is just for visualization of waypoints)
+        print("Waypoints:", len(self.waypoints))
         self.send_waypoints()
 
     def start(self):
@@ -175,6 +201,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--port', type=int, default=5760, help='Port number')
     parser.add_argument('--host', type=str, default='127.0.0.1', help="host address, i.e. '127.0.0.1'")
+    parser.add_argument('--prune', type=str, default='bresenham', help="Path pruning Algorithm ('colliniarity' or 'bresenham'")
     args = parser.parse_args()
 
     conn = MavlinkConnection('tcp:{0}:{1}'.format(args.host, args.port), timeout=60)
