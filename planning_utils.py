@@ -151,51 +151,6 @@ def a_star(grid, h, start, goal):
         print('**********************') 
     return path[::-1], path_cost
 
-def a_star_graph(graph, heuristic, start, goal):
-    """Modified A* to work with NetworkX graphs."""
-    path = []
-    queue = PriorityQueue()
-    queue.put((0, start))
-    visited = set(start)
-
-    branch = {}
-    found = False
-    
-    while not queue.empty():
-        item = queue.get()
-        current_cost = item[0]
-        current_node = item[1]
-
-        if current_node == goal:        
-            print('Found a path.')
-            found = True
-            break
-        else:
-            for next_node in graph[current_node]:
-                cost = graph.edges[current_node, next_node]['weight']
-                new_cost = current_cost + cost + heuristic(next_node, goal)
-                
-                if next_node not in visited:                
-                    visited.add(next_node)               
-                    queue.put((new_cost, next_node))
-                    
-                    branch[next_node] = (new_cost, current_node)
-             
-    path = []
-    path_cost = 0
-    if found:
-        
-        # retrace steps
-        path = []
-        n = goal
-        path_cost = branch[n][0]
-        while branch[n][1] != start:
-            path.append(branch[n][1])
-            n = branch[n][1]
-        path.append(branch[n][1])
-            
-    return path[::-1], path_cost
-
 def heuristic(position, goal_position):
     return np.linalg.norm(np.array(position) - np.array(goal_position))
 
@@ -243,3 +198,14 @@ def collinearity_prune(path):
         else:
             i += 1
     return pruned_path
+
+###################################################
+# Medial-Axis utilities
+###################################################
+def find_start_goal(skel, start, goal):
+    skel_cells = np.transpose(skel.nonzero())
+    start_min_dist = np.linalg.norm(np.array(start) - np.array(skel_cells), axis=1).argmin()
+    near_start = skel_cells[start_min_dist]
+    goal_min_dist = np.linalg.norm(np.array(goal) - np.array(skel_cells), axis=1).argmin()
+    near_goal = skel_cells[goal_min_dist]
+    return near_start, near_goal

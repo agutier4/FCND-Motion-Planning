@@ -4,11 +4,15 @@ import msgpack
 from enum import Enum, auto
 import numpy as np
 
-from planning_utils import a_star, heuristic, create_grid, collinearity_prune, bresenham_prune, a_star_graph
+from planning_utils import a_star, heuristic, create_grid, collinearity_prune, bresenham_prune, find_start_goal
 from udacidrone import Drone
 from udacidrone.connection import MavlinkConnection
 from udacidrone.messaging import MsgID
 from udacidrone.frame_utils import global_to_local
+
+import matplotlib.pyplot as plt
+from skimage.morphology import medial_axis
+from skimage.util import invert
 
 class States(Enum):
     MANUAL = auto()
@@ -62,7 +66,10 @@ class MotionPlanning(Drone):
                 self.arming_transition()
             elif self.flight_state == States.ARMING:
                 if self.armed:
-                    self.plan_path()
+                    if(args.plan == 'medial-axis'):
+                        self.plan_medial_axis()
+                    else:
+                        self.plan_path()
             elif self.flight_state == States.PLANNING:
                 self.takeoff_transition()
             elif self.flight_state == States.DISARMING:
@@ -110,6 +117,7 @@ class MotionPlanning(Drone):
         self.connection._master.write(data)
 
     def plan_path(self):
+        print('Simple Grid-based Planning selected')
         self.flight_state = States.PLANNING
         print("Searching for a path ...")
         TARGET_ALTITUDE = 5
@@ -182,6 +190,70 @@ class MotionPlanning(Drone):
         print("Waypoints:", len(self.waypoints))
         self.send_waypoints()
 
+    def plan_medial_axis(self):
+        print('Medial-Axis planning')
+        self.flight_state = States.PLANNING
+        print("Searching for a path ...")
+        TARGET_ALTITUDE = 5
+        SAFETY_DISTANCE = 5
+
+        self.target_position[2] = TARGET_ALTITUDE
+
+        # read lat0, lon0 from colliders into floating point values
+        filename = 'colliders.csv'
+        home = np.genfromtxt(filename, dtype=str, max_rows=1, delimiter=',')
+        lat0 = float(str.split(home[0])[1])
+        lon0 = float(str.split(home[1])[1])
+
+        # set home position to (lon0, lat0, 0)
+        self.set_home_position( float(lon0), float(lat0), 0)
+        local_start = global_to_local(self.global_position, self.global_home) 
+        
+        print('global home {0}, position {1}, local position {2}'.format(self.global_home, self.global_position,
+                                                                         self.local_position))
+        # Set goal using provided global position
+        goal_lat_lon = ( args.goal_lon, args.goal_lat, args.goal_alt )
+        local_goal = global_to_local( goal_lat_lon, self.global_home )
+
+        # Read in obstacle map
+        data = np.loadtxt('colliders.csv', delimiter=',', dtype='Float64', skiprows=2)
+        grid, north_offset, east_offset = create_grid(data, TARGET_ALTITUDE, SAFETY_DISTANCE)
+        skeleton = medial_axis(invert(grid))
+        
+        print('Skeleton generated') 
+        start_ne = ( local_start[0] - north_offset, local_start[1] - east_offset)
+        goal_ne = ( local_goal[0] - north_offset, local_goal[1] - east_offset)
+        skel_start, skel_goal = find_start_goal(skeleton, start_ne, goal_ne)
+
+        path, cost = a_star(invert(skeleton).astype(np.int), heuristic, tuple(skel_start), tuple(skel_goal))
+
+        # Prune path to minimize number of waypoints
+        if (args.prune == 'collinearity'):
+            print('Pruning path with collinearity check')
+            path = collinearity_prune(path)
+        elif (args.prune == 'bresenham'):
+            print('Pruning path with bresenham')
+            path = bresenham_prune(path,grid)
+        else:
+            print('Unrecognized prune option returning full path')
+
+        # Convert path to waypoints
+        waypoints = [[int(p[0] + north_offset), int(p[1] + east_offset), int(TARGET_ALTITUDE), int(0)] for p in path]
+
+        # Assign heading to the waypoints so the craft flies pointed towards the waypoint 
+        for i in range(1, len(waypoints)):
+            p1 = waypoints[i-1]
+            p2 = waypoints[i]
+            waypoints[i][3] = np.arctan2((p2[1]-p1[1]), (p2[0]-p1[0]))
+
+        # Set self.waypoints
+        self.waypoints = waypoints
+
+        # send waypoints to sim (this is just for visualization of waypoints)
+        print("Waypoints:", len(self.waypoints))
+        self.send_waypoints()
+
+
     def start(self):
         self.start_log("Logs", "NavLog.txt")
 
@@ -203,6 +275,7 @@ if __name__ == "__main__":
     parser.add_argument('--goal_lon', type=float, default=-122.397120, help='Goal latitude')
     parser.add_argument('--goal_lat', type=float, default=37.793834, help='Goal longitude')
     parser.add_argument('--goal_alt', type=float, default=0, help='Goal altitude')
+    parser.add_argument('--plan', type=str, default='grid', help="Planning method: 'grid' or 'medial-axis'")
     args = parser.parse_args()
 
     conn = MavlinkConnection('tcp:{0}:{1}'.format(args.host, args.port), timeout=60)
